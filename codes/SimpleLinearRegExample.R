@@ -103,27 +103,3 @@ plot(x,y,lwd = 2)
 beta0.median = median(beta0.est)
 beta1.median = median(beta1.est)
 abline(a = beta0.median, b = beta1.median, col="red", lwd = 2)
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-
-
-
-
-
-
-
-
-
-
-
-
-
