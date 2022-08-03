@@ -1,0 +1,35 @@
+model {
+  for (g in 1:Ngroup) {
+    # prior towards beta0 and xbetas
+    beta0.mu[g] ~ dnorm(0, 0.0000001) # prior intercept
+    beta0.sig[g] ~ dunif(0.0001, 100) # prior intercept error
+    sigma[g] ~ dunif(0.0001, 100) # prior for the regression error
+    
+  	for ( j in 1:Nx ) {
+  	
+      xbeta.mu[g,j] ~ dnorm(0, 0.0000001) # prior slope
+  		xbeta.sig[g,j] ~ dunif(0.0001, 100) # prior slope error
+  
+  	}
+  
+    ## hierarchical model betas prior
+  	for (s in 1:Nsubj) {
+  	
+  		beta0.s[g,s] ~ dnorm(beta0.mu[g], beta0.sig[g])
+  		for ( j in 1:Nx ) {
+  	      xbeta.s[g,s,j] ~ dnorm(xbeta.mu[g,j], xbeta.sig[g,j]) # index xbeta.s['group','subject','Nx']
+  		}
+  
+  	}
+  	
+  }
+	
+	# linear regression
+	for (i in 1:Ntotal) {
+	
+	  y[i] ~ dnorm(mu[i], 1/sigma[groupIdx[i]]^2)
+    mu[i] <- beta0.s[groupIdx[i], subIdx[i]] + sum( xbeta.s[groupIdx[i], subIdx[i], 1:Nx] * x[i, 1:Nx] )
+	  
+	}
+
+}

@@ -1,0 +1,272 @@
+---
+title: "Censored Data with Hierarchical Model"
+author: "Langyan Zang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(rjags)
+library(runjags)
+library(HDInterval)
+library(knitr)
+library(GGally)
+library(ggplot2)
+```
+
+## Censored Data Analysis
+
+The data in wtp_data.csv represent the amounts two groups of participants (A and B) are willing to pay for snack food items. Each individual placed bids to buy 60 different foods. All participants saw the same 60 foods. They were given an endowment of 5 CHF per food item to use in purchasing the foods from the experimenter. Thus, the maximum bid was 5, even if the participant might have been willing to pay more than 5 CHF.
+
+> **_Analysis Design:_** Test whether Group A and Group B differ in terms of the amount that they bid to purchase snack food items using a standard normal model and a normal model including censor limits at 0 and 5 CHF. Both the standard normal and censored normal models are hierarchical.
+
+### Density plot for both groups
+
+```{r load_data, cache=TRUE}
+data <- read.csv("data/wtp_data.csv",stringsAsFactors = TRUE)
+# prepare data.frame for plot
+df_plot <- data.frame(
+    bid=c(data$Bid[which(data$Group=="A")],data$Bid[which(data$Group=="B")]),
+    group=rep(c("Group A", "Group B"), each=length(data$Bid[which(data$Group=="A")]) ) 
+    )
+ggplot(df_plot, aes(x=bid, color=group, fill=group)) + geom_density(alpha=0.3)
+```
+
+### Standard normal model and Censored normal model
+
+```{r prepare_data, cache=TRUE}
+# bid data
+y <- data$Bid
+Ntotal <- length(y)
+
+# hierarchical group
+groupIdx <- as.numeric(data$Group)
+Ngroup <- 2
+subIdx <- data$Subject
+Nsubj <- length(unique(subIdx))
+
+dat_std_normal <- dump.format(
+                              list(
+                                    y = y,
+                                    Ntotal = Ntotal,
+                                    groupIdx = groupIdx,
+                                    Ngroup = Ngroup,
+                                    subIdx = subIdx,
+                                    Nsubj = Nsubj
+                                  )
+                              )
+
+# threshold (0.,5.)
+threshMat <- matrix(rep(c(0.,5.), length(y)), 
+                    byrow=TRUE, nrow=length(y)) # censored limits
+
+ybin = rep(1,length(y)) # censored data, all the observables are within the limit
+ybin[which(y==0)] <- 0 # change ybin to 0 with observed data lies exactly on the lower bound
+ybin[which(y==5)] <- 2 # change ybin to 2 with observed data lies exactly on the upper bound
+y_cen <- y
+y_cen[which(y==0 | y==5)] <- NA # comprise data points, which are likely to be outside of limits, to NA. let Jags impute them
+
+dat_cen_normal <- dump.format(
+                              list(
+                                    y = y_cen,
+                                    ybin = ybin,
+                                    threshMat = threshMat,
+                                    Ntotal = Ntotal,
+                                    groupIdx = groupIdx,
+                                    Ngroup = Ngroup,
+                                    subIdx = subIdx,
+                                    Nsubj = Nsubj
+                                  )
+                              )
+
+```
+
+#### Standard Normal
+
+```{r std_normal_model, cache=TRUE}
+model_std_normal = 
+"model {
+
+  for (g in 1:Ngroup) {
+  
+    mu.mu[g] ~ dnorm(0, 0.0000001) # prior group mean
+    mu.sig[g] ~ dunif(0.0001, 100) # prior for the standard deviation across individuals
+    sigma.mu[g] ~ dunif(0.0001, 100) # prior for the standard deviation across trials
+    
+    for (s in 1:Nsubj) {
+      mu.s[g,s] ~ dnorm(mu.mu[g], 1/mu.sig[g]^2)
+    }
+  }
+    
+  for (i in 1:Ntotal) {
+    y[i] ~ dnorm(mu.s[groupIdx[i],subIdx[i]], 1/sigma.mu[groupIdx[i]]^2)
+  }
+
+}"
+writeLines(model_std_normal, con = "models/StdNormal.txt")
+```
+
+#### Censored Normal
+
+```{r censored_normal_model, cache=TRUE}
+model_cen_normal = 
+"model {
+
+  for (g in 1:Ngroup) {
+  
+    mu.mu[g] ~ dnorm(0, 0.0000001) # prior group mean
+    mu.sig[g] ~ dunif(0.0001, 100) # prior for the standard deviation across individuals
+    sigma.mu[g] ~ dunif(0.0001, 100) # prior for the standard deviation across trials
+    
+    for (s in 1:Nsubj) {
+      mu.s[g,s] ~ dnorm(mu.mu[g], 1/mu.sig[g]^2)
+    }
+    
+  }
+    
+  for (i in 1:Ntotal) {
+    y[i] ~ dnorm(mu.s[groupIdx[i],subIdx[i]], 1/sigma.mu[groupIdx[i]]^2)
+    ybin[i] ~ dinterval( y[i] , threshMat[i, ] )
+  }
+
+}"
+writeLines(model_cen_normal, con = "models/CsrdNormal.txt")
+```
+
+#### Initialize Chains
+
+```{r initialize_chains,cache=TRUE}
+Mu = c(mean(data$Bid[data$Group=="A"]), mean(data$Bid[data$Group=="B"]))
+Sigma = c(sd(data$Bid[data$Group=="A"]), sd(data$Bid[data$Group=="B"]))
+
+inits1 <- dump.format(list(mu.mu = Mu, sigma.mu = Sigma, .RNG.name="base::Super-Duper", .RNG.seed=99999 ))
+inits2 <- dump.format(list(mu.mu = Mu, sigma.mu = Sigma, .RNG.name="base::Wichmann-Hill", .RNG.seed=1234 ))
+inits3 <- dump.format(list(mu.mu = Mu, sigma.mu = Sigma, .RNG.name="base::Mersenne-Twister", .RNG.seed=6666 ))
+
+monitor = c("mu.mu","sigma.mu")
+```
+
+#### Run Jags
+
+```{r run_jags, cache=TRUE}
+# Standard normal
+results_std <- run.jags(model="models/StdNormal.txt", monitor=monitor, data=dat_std_normal, 
+                    n.chains=3, inits=c(inits1, inits2, inits3), plots = FALSE, burnin=1000, sample=15000, thin=1)
+
+# Censored normal
+results_cen <- run.jags(model="models/CsrdNormal.txt", monitor=monitor, data=dat_cen_normal, 
+                    n.chains=3, inits=c(inits1, inits2, inits3), plots = FALSE, burnin=1000, sample=15000, thin=1)
+```
+
+#### Summary
+
+```{r summary,cache=TRUE}
+# Standard normal
+chains_std_normal = as.data.frame(
+  rbind(results_std$mcmc[[1]], results_std$mcmc[[2]], results_std$mcmc[[3]])
+)
+colnames(chains_std_normal) <- c("std_mu_A","std_mu_B","std_sigma_A","std_sigma_B")
+kable(summary(results_std), digits = 3, align = "c")
+ggpairs(chains_std_normal)
+
+# Censored normal
+chains_cen_normal = as.data.frame(
+  rbind(results_cen$mcmc[[1]], results_cen$mcmc[[2]], results_cen$mcmc[[3]])
+)
+colnames(chains_cen_normal) <- c("cen_mu_A","cen_mu_B","cen_sigma_A","cen_sigma_B")
+kable(summary(results_cen), digits = 3, align = "c")
+ggpairs(chains_cen_normal)
+```
+
+### Group level density plots
+
+#### Standard normal model
+
+```{r group_simulation_std,cache=TRUE}
+mu_A_std = mean(chains_std_normal$std_mu_A)
+sig_A_std = mean(chains_std_normal$std_sigma_A)
+mu_B_std = mean(chains_std_normal$std_mu_B)
+sig_B_std = mean(chains_std_normal$std_sigma_B)
+sim_A_std = rnorm(1000, mean = mu_A_std, sd = sig_A_std)
+sim_B_std = rnorm(1000, mean = mu_B_std, sd = sig_B_std)
+df_std <- data.frame(
+    bid=c(sim_A_std,sim_B_std),
+    group=rep(c("Group A", "Group B"), each=1000 ) 
+    )
+ggplot(df_std, aes(x=bid, color=group, fill=group)) + geom_density(alpha=0.3) + ggtitle("Standard normal model")
+```
+
+#### Censored normal model
+
+```{r group_simulation_cen,cache=TRUE}
+mu_A_cen = mean(chains_cen_normal$cen_mu_A)
+sig_A_cen = mean(chains_cen_normal$cen_sigma_A)
+mu_B_cen = mean(chains_cen_normal$cen_mu_B)
+sig_B_cen = mean(chains_cen_normal$cen_sigma_B)
+sim_A_cen = rnorm(1000, mean = mu_A_cen, sd = sig_A_cen)
+sim_B_cen = rnorm(1000, mean = mu_B_cen, sd = sig_B_cen)
+df_cen <- data.frame(
+    bid=c(sim_A_cen,sim_B_cen),
+    group=rep(c("Group A", "Group B"), each=1000 ) 
+    )
+ggplot(df_cen, aes(x=bid, color=group, fill=group)) + geom_density(alpha=0.3) + ggtitle("Censored normal model")
+```
+
+### Difference between Group A and Group B
+
+> **_Answer:_** For the Standard Normal model, there is no significant difference of mu between two groups, only significant difference of sigma. Whereas, there exist significant difference both mu and sigma between two groups. It appears that the censored normal model can better capture the difference between groups within censored data.
+
+#### muA_standard - muB_standard
+
+```{r diff_a,cache=TRUE}
+mu_diff_std = chains_std_normal$std_mu_A - chains_std_normal$std_mu_B
+hist(mu_diff_std, main = "muA_standard - muB_standard", xlab = "Difference", col = "skyblue")
+abline(v = hdi(mu_diff_std), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+
+#### sigA_standard - sigB_standard
+
+```{r diff_b,cache=TRUE}
+sig_diff_std = chains_std_normal$std_sigma_A - chains_std_normal$std_sigma_B
+hist(sig_diff_std, main = "sigA_standard - sigB_standard", xlab = "Difference", col = "skyblue")
+abline(v = hdi(sig_diff_std), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### muA_censored - muB_censored
+
+```{r diff_c,cache=TRUE}
+mu_diff_cen = chains_cen_normal$cen_mu_A - chains_cen_normal$cen_mu_B
+hist(mu_diff_cen, main = "muA_censored - muB_censored", xlab = "Difference", col = "skyblue")
+abline(v = hdi(mu_diff_cen), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### sigA_censored - sigB_censored
+
+```{r diff_d,cache=TRUE}
+sig_diff_cen = chains_cen_normal$cen_sigma_A - chains_cen_normal$cen_sigma_B
+hist(sig_diff_cen, main = "sigA_censored - sigB_censored", xlab = "Difference", col = "skyblue")
+abline(v = hdi(sig_diff_cen), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+

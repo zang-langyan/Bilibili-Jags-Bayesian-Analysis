@@ -1,0 +1,360 @@
+---
+title: "Ordinal Data with Hierarchical Model"
+author: "Langyan Zang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(rjags)
+library(runjags)
+library(HDInterval)
+library(knitr)
+library(GGally)
+library(ggplot2)
+```
+
+## Ordinal Data Analysis
+
+The data in ratings_data.csv represent ratings on the desire to eat a food from a Likert scale (“Strong No”, “No”, “Neutral”, “Yes”, “Strong Yes”). These categorical responses are recorded as the numbers -2:2 in the data file. Once again there are groups of participants (A and B). Each individual rated 60 different foods in terms of the desire to eat on the Likert scale above, as well as two different attributes (x1 and x2) of the foods on a visual analog scale. We will assume that these visual analog ratings are continuous and censored by the endpoints of the scale. All participants saw the same 60 foods.
+
+> **_Analysis Design:_** Test whether Group A and Group B differ in terms of how x1 and x2 influence their members’ desire to eat the snack food items according to the formula, $Rating \sim B_0 + B_1*x_1 + B_2*x_2 + \varepsilon$, using a hierarchical linear regression model (i.e. treating the scale as metric) and an hierarchical ordinal regression model. Both models should allow for different beta parameters for each participant under general normal distributions for each of the two groups. The group-level distributions should be separate and not inform one another.
+
+### Histogram for both groups
+
+```{r plot,cache=TRUE}
+data <- read.csv("data/ratings_data.csv",stringsAsFactors = FALSE)
+# prepare data.frame for plot
+df_plot <- data.frame(
+    rating=c(data$Rating[which(data$Group=="A")],data$Rating[which(data$Group=="B")]),
+    group=rep(c("Group A", "Group B"), each=length(data$Rating[which(data$Group=="A")]) ) 
+    )
+ggplot(df_plot, aes(x=rating, color=group, fill=group)) + geom_bar(alpha=0.3, position = "dodge")
+```
+
+### Hierarchical linear regression model and Hierarchical ordinal regression model
+
+```{r prepare_data, cache=TRUE}
+# rating data
+y <- data$Rating
+Ntotal <- length(y)
+nYlevels <- length(unique(y))
+# We define the upper and lower thresholds, and then estimate the mean and other thresholds
+thresh =rep(NA, nYlevels-1)
+thresh[1] = 1.5
+thresh[nYlevels-1] = nYlevels - 0.5
+
+# independent variable Xs
+x = cbind(data$x1,data$x2)
+Nx = 2
+
+# hierarchical group
+groupIdx <- as.numeric(factor(data$Group))
+Ngroup <- 2
+subIdx <- data$Subject
+Nsubj <- length(unique(subIdx))
+
+# Hierarchical linear regression model
+dat_lin <- dump.format(
+                        list(
+                              y = y,
+                              Ntotal = Ntotal,
+                              x = x,
+                              Nx = Nx,
+                              groupIdx = groupIdx,
+                              Ngroup = Ngroup,
+                              subIdx = subIdx,
+                              Nsubj = Nsubj
+                            )
+                      )
+
+# Hierarchical ordinal regression model
+dat_ord <- dump.format(
+                        list(
+                              y = y + 3,
+                              Ntotal = Ntotal,
+                              nYlevels = nYlevels,
+                              thresh = thresh,
+                              x = x,
+                              Nx = Nx,
+                              groupIdx = groupIdx,
+                              Ngroup = Ngroup,
+                              subIdx = subIdx,
+                              Nsubj = Nsubj
+                            )
+                      )
+
+```
+
+#### Hierarchical linear regression model
+
+```{r hierarchical_linear_regression_model, cache=TRUE}
+model_hier_lin = 
+"model {
+  for (g in 1:Ngroup) {
+    # prior towards beta0 and xbetas
+    beta0.mu[g] ~ dnorm(0, 0.0000001) # prior intercept
+    beta0.sig[g] ~ dunif(0.0001, 100) # prior intercept error
+    sigma[g] ~ dunif(0.0001, 100) # prior for the regression error
+    
+  	for ( j in 1:Nx ) {
+  	
+      xbeta.mu[g,j] ~ dnorm(0, 0.0000001) # prior slope
+  		xbeta.sig[g,j] ~ dunif(0.0001, 100) # prior slope error
+  
+  	}
+  
+    ## hierarchical model betas prior
+  	for (s in 1:Nsubj) {
+  	
+  		beta0.s[g,s] ~ dnorm(beta0.mu[g], beta0.sig[g])
+  		for ( j in 1:Nx ) {
+  	      xbeta.s[g,s,j] ~ dnorm(xbeta.mu[g,j], xbeta.sig[g,j]) # index xbeta.s['group','subject','Nx']
+  		}
+  
+  	}
+  	
+  }
+	
+	# linear regression
+	for (i in 1:Ntotal) {
+	
+	  y[i] ~ dnorm(mu[i], 1/sigma[groupIdx[i]]^2)
+    mu[i] <- beta0.s[groupIdx[i], subIdx[i]] + sum( xbeta.s[groupIdx[i], subIdx[i], 1:Nx] * x[i, 1:Nx] )
+	  
+	}
+
+}"
+writeLines(model_hier_lin, con = "models/Hierarchical_Linear_reg.txt")
+```
+
+#### Hierarchical ordinal regression model
+
+```{r hierarchical_ordinal_regression_model, cache=TRUE}
+model_hier_ord = 
+"model {
+  for (g in 1:Ngroup) {
+    # prior towards beta0 and xbetas
+    beta0.mu[g] ~ dnorm(0, 0.0000001) # prior intercept
+    beta0.sig[g] ~ dunif(0.0001, 100) # prior intercept error
+    sigma[g] ~ dunif(nYlevels/1000 , nYlevels*10) # prior for the regression error
+    
+  	for ( j in 1:Nx ) {
+  	
+      xbeta.mu[g,j] ~ dnorm(0, 0.0000001) # prior slope
+  		xbeta.sig[g,j] ~ dunif(0.0001, 100) # prior slope error
+  
+  	}
+  
+    ## hierarchical model betas prior
+  	for (s in 1:Nsubj) {
+  	
+  		beta0.s[g,s] ~ dnorm(beta0.mu[g], beta0.sig[g])
+  		for ( j in 1:Nx ) {
+  	      xbeta.s[g,s,j] ~ dnorm(xbeta.mu[g,j], xbeta.sig[g,j]) # index xbeta.s['group','subject','Nx']
+  		}
+  
+  	}
+  	
+  }
+	
+	# ordinal regression
+	for ( k in 2:(nYlevels-2) ) {  # 1 and nYlevels-1 are fixed, not stochastic
+	
+      thresh[k] ~ dnorm( k+0.5 , 1/2^2 )
+      
+  }
+
+  for ( i in 1:Ntotal ) {
+    
+    mu[i] <- beta0.s[groupIdx[i], subIdx[i]] + sum( xbeta.s[groupIdx[i], subIdx[i], 1:Nx] * x[i, 1:Nx] )
+    
+    # intervals for ordinal regression
+    pr[i,1] <- pnorm( thresh[1] , mu[i] , 1/sigma[groupIdx[i]]^2 )                     # interval #1
+    for ( k in 2:(nYlevels-1) ) {                                                      # interval #2~(nYlevels-1)
+      pr[i,k] <- max( 0 ,  pnorm( thresh[ k ] , mu[i] , 1/sigma[groupIdx[i]]^2 )
+                         - pnorm( thresh[k-1] , mu[i] , 1/sigma[groupIdx[i]]^2 ) )
+    }
+    pr[i,nYlevels] <- 1 - pnorm( thresh[nYlevels-1] , mu[i] , 1/sigma[groupIdx[i]]^2 ) # interval #nYlevels
+
+    y[i] ~ dcat( pr[i,1:nYlevels] )
+    
+  }
+
+}"
+writeLines(model_hier_ord, con = "models/Hierarchical_Ordinal_reg.txt")
+```
+
+#### Initialize Chains
+
+```{r initialize_chains,cache=TRUE}
+inits1 <- dump.format(list( .RNG.name="base::Super-Duper", .RNG.seed=99999 ))
+inits2 <- dump.format(list( .RNG.name="base::Wichmann-Hill", .RNG.seed=1234 ))
+inits3 <- dump.format(list( .RNG.name="base::Mersenne-Twister", .RNG.seed=6666 ))
+
+monitor = c("beta0.mu", "xbeta.mu", "sigma")
+```
+
+#### Run Jags
+
+```{r run_jags, cache=TRUE}
+# Hierarchical linear regression model
+results_linear <- run.jags(model="models/Hierarchical_Linear_reg.txt", monitor=monitor, data=dat_lin, 
+                    n.chains=3, inits=c(inits1, inits2, inits3), plots = FALSE, burnin=1000, sample=5000, thin=1)
+
+# Hierarchical ordinal regression model
+results_ordinal <- run.jags(model="models/Hierarchical_Ordinal_reg.txt", monitor=monitor, data=dat_ord, 
+                    n.chains=3, inits=c(inits1, inits2, inits3), plots = FALSE, burnin=1000, sample=5000, thin=1)
+```
+
+#### Summary
+
+```{r summary,cache=TRUE}
+# Standard normal
+chains_linear = as.data.frame(
+  rbind(results_linear$mcmc[[1]], results_linear$mcmc[[2]], results_linear$mcmc[[3]])
+)
+colnames(chains_linear) <- c("beta0_A","beta0_B","beta1_A","beta1_B","beta2_A","beta2_B","sigma_A","sigma_B")
+kable(summary(results_linear), digits = 3, align = "c")
+ggpairs(chains_linear)
+
+# Censored normal
+chains_ordinal = as.data.frame(
+  rbind(results_ordinal$mcmc[[1]], results_ordinal$mcmc[[2]], results_ordinal$mcmc[[3]])
+)
+colnames(chains_ordinal) <- c("beta0_A","beta0_B","beta1_A","beta1_B","beta2_A","beta2_B","sigma_A","sigma_B")
+kable(summary(results_ordinal), digits = 3, align = "c")
+ggpairs(chains_ordinal)
+```
+
+### Contrast between x1 and x2
+
+> **_Answer:_** In both models, Group A's $\beta_1$ is significantly smaller than $\beta_2$, whereas Group B's $\beta_1$ is significantly larger than $\beta_2$. However the difference between $\beta_1$ and $\beta_2$ in both groups is estimated more drastically in Ordinal model than in Metric model.
+
+#### Hierarchical linear regression model
+
+**beta1_A – beta2_A**
+
+```{r contrast_xA_lin,cache=TRUE}
+b1_b2_A_lin <- chains_linear$beta1_A - chains_linear$beta2_A
+hist(b1_b2_A_lin, main = "(Metric) beta1_A – beta2_A", xlab = "Difference", col = "skyblue")
+abline(v = hdi(b1_b2_A_lin), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+**beta1_B – beta2_B**
+
+```{r contrast_xB_lin,cache=TRUE}
+b1_b2_B_lin <- chains_linear$beta1_B - chains_linear$beta2_B
+hist(b1_b2_B_lin, main = "(Metric) beta1_B – beta2_B", xlab = "Difference", col = "skyblue")
+abline(v = hdi(b1_b2_B_lin), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### Hierarchical ordinal regression model
+
+**beta1_A – beta2_A**
+
+```{r contrast_xA_ord,cache=TRUE}
+b1_b2_A_ord <- chains_ordinal$beta1_A - chains_ordinal$beta2_A
+hist(b1_b2_A_ord, main = "(Ordinal) beta1_A – beta2_A", xlab = "Difference", col = "skyblue")
+abline(v = hdi(b1_b2_A_ord), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+**beta1_B – beta2_B**
+
+```{r contrast_xB_ord,cache=TRUE}
+b1_b2_B_ord <- chains_ordinal$beta1_B - chains_ordinal$beta2_B
+hist(b1_b2_B_ord, main = "(Ordinal) beta1_B – beta2_B", xlab = "Difference", col = "skyblue")
+abline(v = hdi(b1_b2_B_ord), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+### Contrast between models
+
+> **_Answer:_** The $\beta$s differ significantly within groups across two models.
+
+#### Metric beta1_A - Ordinal beta1_A
+
+```{r contrast_c,cache=TRUE}
+M_O_b1_A <- chains_linear$beta1_A - chains_ordinal$beta1_A
+hist(M_O_b1_A, main = "Metric beta1_A - Ordinal beta1_A", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_b1_A), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+
+#### Metric beta2_A - Ordinal beta2_A
+
+```{r contrast_d,cache=TRUE}
+M_O_b2_A <- chains_linear$beta2_A - chains_ordinal$beta2_A
+hist(M_O_b2_A, main = "Metric beta2_A - Ordinal beta2_A", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_b2_A), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### Metric beta1_B - Ordinal beta1_B
+
+```{r contrast_e,cache=TRUE}
+M_O_b1_B <- chains_linear$beta1_B - chains_ordinal$beta1_B
+hist(M_O_b1_B, main = "Metric beta1_B - Ordinal beta1_B", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_b1_B), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### Metric beta2_B - Ordinal beta2_B
+
+```{r contrast_f,cache=TRUE}
+M_O_b2_B <- chains_linear$beta2_B - chains_ordinal$beta2_B
+hist(M_O_b2_B, main = "Metric beta2_B - Ordinal beta2_B", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_b2_B), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### Metric x1x2_diff_A - Ordinal x1x2_diff_A
+
+```{r contrast_g,cache=TRUE}
+M_O_xdiff_A <- b1_b2_A_lin - b1_b2_A_ord
+hist(M_O_xdiff_A, main = "Metric x1x2_diff_A - Ordinal x1x2_diff_A", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_xdiff_A), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```
+
+#### Metric x1x2_diff_B - Ordinal x1x2_diff_B
+
+```{r contrast_h,cache=TRUE}
+M_O_xdiff_B <- b1_b2_B_lin - b1_b2_B_ord
+hist(M_O_xdiff_B, main = "Metric x1x2_diff_B - Ordinal x1x2_diff_B", xlab = "Difference", col = "skyblue")
+abline(v = hdi(M_O_xdiff_B), col = "red", lwd = .5, lty = "dashed")
+legend("topright", legend = c("HDI"), 
+       col = c("red"), lty = c("dashed"),
+       box.lty=0, cex = 0.5)
+```

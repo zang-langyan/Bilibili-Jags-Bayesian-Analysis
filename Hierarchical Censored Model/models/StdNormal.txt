@@ -1,0 +1,18 @@
+model {
+
+  for (g in 1:Ngroup) {
+  
+    mu.mu[g] ~ dnorm(0, 0.0000001) # prior group mean
+    mu.sig[g] ~ dunif(0.0001, 100) # prior for the standard deviation across individuals
+    sigma.mu[g] ~ dunif(0.0001, 100) # prior for the standard deviation across trials
+    
+    for (s in 1:Nsubj) {
+      mu.s[g,s] ~ dnorm(mu.mu[g], 1/mu.sig[g]^2)
+    }
+  }
+    
+  for (i in 1:Ntotal) {
+    y[i] ~ dnorm(mu.s[groupIdx[i],subIdx[i]], 1/sigma.mu[groupIdx[i]]^2)
+  }
+
+}

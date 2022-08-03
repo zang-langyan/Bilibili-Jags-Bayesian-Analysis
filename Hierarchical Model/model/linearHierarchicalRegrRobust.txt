@@ -1,0 +1,26 @@
+model {
+
+	beta0.mu ~ dnorm(0, 0.0000001) # prior intercept
+	beta1.mu ~ dnorm(0, 0.0000001) # prior slope
+	
+	beta0.sig ~ dunif(0.0001, 100) # prior intercept error
+	beta1.sig ~ dunif(0.0001, 100) # prior slope error
+	
+	sigma ~ dunif(0.0001, 100) # prior for the standard deviation 
+	nu <- nuMinusOne+1
+	nuMinusOne ~ dexp(1/29) # prior Normality scale parameter
+	
+	for (s in 1:Nsubj) {
+	
+		beta0.s[s] ~ dnorm(beta0.mu, beta0.sig)
+		beta1.s[s] ~ dnorm(beta1.mu, beta1.sig)
+	
+	}
+	
+	for (i in 1:Ntotal) {
+	
+		y[i] ~ dt(mu[i], 1/sigma^2, nu)
+		mu[i] <- beta0.s[subIdx[i]] + beta1.s[subIdx[i]]*x[i]
+	
+	}	
+}

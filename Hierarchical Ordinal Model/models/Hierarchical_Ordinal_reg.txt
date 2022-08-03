@@ -1,0 +1,50 @@
+model {
+  for (g in 1:Ngroup) {
+    # prior towards beta0 and xbetas
+    beta0.mu[g] ~ dnorm(0, 0.0000001) # prior intercept
+    beta0.sig[g] ~ dunif(0.0001, 100) # prior intercept error
+    sigma[g] ~ dunif(nYlevels/1000 , nYlevels*10) # prior for the regression error
+    
+  	for ( j in 1:Nx ) {
+  	
+      xbeta.mu[g,j] ~ dnorm(0, 0.0000001) # prior slope
+  		xbeta.sig[g,j] ~ dunif(0.0001, 100) # prior slope error
+  
+  	}
+  
+    ## hierarchical model betas prior
+  	for (s in 1:Nsubj) {
+  	
+  		beta0.s[g,s] ~ dnorm(beta0.mu[g], beta0.sig[g])
+  		for ( j in 1:Nx ) {
+  	      xbeta.s[g,s,j] ~ dnorm(xbeta.mu[g,j], xbeta.sig[g,j]) # index xbeta.s['group','subject','Nx']
+  		}
+  
+  	}
+  	
+  }
+	
+	# ordinal regression
+	for ( k in 2:(nYlevels-2) ) {  # 1 and nYlevels-1 are fixed, not stochastic
+	
+      thresh[k] ~ dnorm( k+0.5 , 1/2^2 )
+      
+  }
+
+  for ( i in 1:Ntotal ) {
+    
+    mu[i] <- beta0.s[groupIdx[i], subIdx[i]] + sum( xbeta.s[groupIdx[i], subIdx[i], 1:Nx] * x[i, 1:Nx] )
+    
+    # intervals for ordinal regression
+    pr[i,1] <- pnorm( thresh[1] , mu[i] , 1/sigma[groupIdx[i]]^2 )                     # interval #1
+    for ( k in 2:(nYlevels-1) ) {                                                      # interval #2~(nYlevels-1)
+      pr[i,k] <- max( 0 ,  pnorm( thresh[ k ] , mu[i] , 1/sigma[groupIdx[i]]^2 )
+                         - pnorm( thresh[k-1] , mu[i] , 1/sigma[groupIdx[i]]^2 ) )
+    }
+    pr[i,nYlevels] <- 1 - pnorm( thresh[nYlevels-1] , mu[i] , 1/sigma[groupIdx[i]]^2 ) # interval #nYlevels
+
+    y[i] ~ dcat( pr[i,1:nYlevels] )
+    
+  }
+
+}
