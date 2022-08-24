@@ -1,0 +1,19 @@
+model {
+  for (d in 1:D){
+    q[1,d] <- 0
+  }
+  for (t in 1:T) {
+    beta[t] <- ifelse(t<=10, (t/10)^2, 1)
+    for (d in 1:D) {
+      choice_prob[t,d] <-exp(beta[t]*q[t,d])
+    }
+    choices[t] ~ dcat(choice_prob[t,])
+    for (d in 1:D){
+      q[t+1, d] <-ifelse(
+        d == choices[t], #evaluate if this is the chosen/sampled deck
+        (1-alpha)*q[t,d] + alpha*(gains[t,d] + W*losses[t,d]), #update value if deck was sampled
+        q[t,d] #set future expectation to current estimated value if the deck was not sampled
+      )
+    }
+  }
+}
