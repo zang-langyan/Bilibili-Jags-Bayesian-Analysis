@@ -1,0 +1,19 @@
+
+.DS_Store
+*.pygtex
+*.pygstyle
+*.bib
+*.aux
+latex/Bayesian_Analysis_mit_Jags.bbl
+latex/Bayesian_Analysis_mit_Jags.bcf
+latex/Bayesian_Analysis_mit_Jags.blg
+latex/Bayesian_Analysis_mit_Jags.log
+latex/Bayesian_Analysis_mit_Jags.out
+latex/Bayesian_Analysis_mit_Jags.run.xml
+latex/Bayesian_Analysis_mit_Jags.synctex.gz
+latex/Bayesian_Analysis_mit_Jags.tex
+latex/figures/SimpleLinearRegrChains.png
+video/Bayes-Jags (1).mov
+video/Bayes-Jags(2).mov
+video/Bayes-Jags(3).mov
+*.mov
